@@ -9,9 +9,6 @@ A Machine Learning sentence classifier. I plan to make something sweet using the
 
 ```
 git clone http://github.com/samolds/demoncat.git
-virtualenv --no-site-packages demoncat
 cd demoncat
-source bin/activate
-pip install -r requirements.txt
 python main.py data
 ```
