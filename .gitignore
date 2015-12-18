@@ -6,3 +6,6 @@
 /include/
 /local/
 .DS_Store
+
+/data/no/
+/data/maybe/
