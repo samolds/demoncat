@@ -1,100 +1,160 @@
 from set_build import *
-import operator
-import urllib2
-import random
-import json
+import math
 import sys
-import os
 
-
-CONCEPT_NET_BASE = "http://conceptnet5.media.mit.edu/data/5.4/c/en/"
-UNUSEFUL = [
-  "the", "a", "an",
-  "and", "or",
-  "is", "was",
-  "because"
-]
-
-
-#build_set_from_json_dir
-#build_set_from_text_file
-#build_set_from_text_dir
 
 def find_classes(data):
-  w_size = 500
-  w = {}
-  w_sorted = []
+  classes = {}
   for entry in data:
-    for xi in entry['vector']:
-      if xi not in UNUSEFUL:
-        length = len(w)
-        if length < w_size and xi in w:
-          w[xi] += 1
-        elif length < w_size:
-          w.update({xi: 1})
-        else:
-          w_sorted = sorted(w.items(), key=operator.itemgetter(1))
-          w.pop(w_sorted[0][0])
-          w.update({xi: 1})
-  return w
+    for c in entry['labels']:
+      if not c in classes:
+        classes.update({c: 0})
+      classes[c] += 1
+  return classes
 
 
-# adapted from PG 15 of
+def log_likelihood(l_probs, wgl_probs):
+  llh = 0.0
+  for label in wgl_probs:
+    summed_prob = 0.0
+    for prob in wgl_probs[label]:
+      summed_prob += wgl_probs[label][prob]
+    if label in l_probs:
+      llh = llh + l_probs[label] + (-1.0 * math.log(summed_prob))
+    else:
+      llh = llh + (-1.0 * math.log(summed_prob))
+  return llh
+
+
+# attempted adaptation from PG 15 of
 # http://www.kamalnigam.com/papers/emcat-mlj99.pdf
-def naive_bayes_em(data):
+def naive_bayes_em(examples, classes, unlabeled):
+  label_probs, word_in_class_probs = naive_bayes(examples, classes)
 
+  examples = examples + unlabeled
+  vocab = set()
+  for entry in examples:
+    for v in entry['vector']:
+      vocab.add(v)
+
+  last_llh = 0.0
+  llh = log_likelihood(label_probs, word_in_class_probs)
+  while llh - last_llh > 0.05:
+    last_llh = llh
+
+    # naive_bayes ----------
+    for classj in classes:
+      docsj = []
+      for entry in examples:
+        if classj in entry['labels']:
+          docsj.append(entry)
+      p_classj = (len(docsj) * 1.0) / (len(examples) * 1.0)
+      label_probs.update({classj: p_classj})
+      textj = []
+      for entry in docsj:
+        textj = textj + entry['vector']
+      n = len(textj) * 1.0
+      for wk in vocab:
+        nk = textj.count(wk) * 1.0
+        pwkclassj = (nk + 1.0) / (n + len(vocab) * 1.0)
+        if wk in word_in_class_probs:
+          word_in_class_probs[wk].update({classj: pwkclassj})
+        else:
+          word_in_class_probs.update({wk: {classj: pwkclassj}})
+    # end naive_bayes -------------
+    llh = log_likelihood(label_probs, word_in_class_probs)
+
+  return label_probs, word_in_class_probs
+
+
+
+
+def naive_bayes(examples, classes):
+  vocab = set()
+  for entry in examples:
+    for v in entry['vector']:
+      vocab.add(v)
+  class_prob = {}
+  word_given_class_prob = {}
+  for classj in classes:
+    docsj = []
+    for entry in examples:
+      if classj in entry['labels']:
+        docsj.append(entry)
+    p_classj = (len(docsj) * 1.0) / (len(examples) * 1.0)
+    class_prob.update({classj: p_classj})
+    textj = []
+    for entry in docsj:
+      textj = textj + entry['vector']
+    n = len(textj) * 1.0
+    for wk in vocab:
+      nk = textj.count(wk) * 1.0
+      pwkclassj = (nk + 1.0) / (n + len(vocab) * 1.0)
+      if wk in word_given_class_prob:
+        word_given_class_prob[wk].update({classj: pwkclassj})
+      else:
+        word_given_class_prob.update({wk: {classj: pwkclassj}})
+  return class_prob, word_given_class_prob
+
+
+
+def classify_with_nb(label_probs, word_in_class_probs, classes, example):
+  max_label = ""
+  max_probability = 0.0
+  for label in classes:
+    prob = label_probs[label]
+    for v in example['vector']:
+      if v in word_in_class_probs and label in word_in_class_probs[v]:
+        prob = prob * word_in_class_probs[v][label]
+    max_probability = max(max_probability, prob)
+    if max_probability == prob:
+      max_label = label
+  return max_label
+
+
+
+def print_accuracy(label, word_in_label, labels, test):
+  correct = 0
+  for entry in test:
+    if classify_with_nb(label, word_in_label, labels, entry) in entry['labels']:
+      correct += 1
+  print correct / (len(test) * 1.0)
+
+
+
+def execute(train_fn, test_fn, unlabeled_fn):
+  train = build_set_from_json_dir(train_fn)
+  test = build_set_from_json_dir(test_fn)
+  unlabeled = build_set_from_text_file(unlabeled_fn)
+
+  classes = find_classes(train + test)
+
+  label_probs, word_in_class_probs = naive_bayes(train, classes)
+  print "Supervised Naive Bayes             \t",
+  print_accuracy(label_probs, word_in_class_probs, classes, test)
+
+  label_probs, word_in_class_probs = naive_bayes_em(train, classes, [])
+  print "Supervised Naive Bayes with EM     \t",
+  print_accuracy(label_probs, word_in_class_probs, classes, test)
+
+  label_probs, word_in_class_probs = naive_bayes_em(train, classes, unlabeled)
+  print "Semi-Supervised Naive Bayes with EM\t",
+  print_accuracy(label_probs, word_in_class_probs, classes, test)
 
 
 
 def main(argv):
-  if len(argv) != 1:
-    print "usage:\n\tpython run.py <train_data>"
+  if len(argv) != 3:
+    print "usage:\tpython run.py <train_data> <test_data> <unlabeled_data>"
     return
 
   train_fn = argv[0]
-  #data = build_set_from_text_file(train_fn)
-  data = build_set_from_json_dir(train_fn)
+  test_fn = argv[1]
+  unlabeled_fn = argv[2]
+  execute(train_fn, test_fn, unlabeled_fn)
 
-
-  x = find_classes(data)
-  sorted_x = sorted(x.items(), key=operator.itemgetter(1))
-  sorted_x.reverse()
-  for i in range(10):
-    print sorted_x[i]
-  import pdb; pdb.set_trace()
-
-  resp = json.loads(urllib2.urlopen(CONCEPT_NET_BASE + sorted_x[1][0]).read())
-  import pdb; pdb.set_trace()
-
-
-  # overview?
-    # search through corpus and find x most popular (non article) words
-    # these become my classes
-    # if i had more time: using list of classes - use concept net to find strongly connected nodes indicating they're suitable topic words
-    # go back through corpus (data is list of "vectors". each vector is an array of words in a sentence)
-    # use naive bayes to learn classifiers
-    # potentially find a way to change classifiers as new one emerge
-
-
-    # word2vec and svm???
 
 
 
 if __name__ == '__main__':
   main(sys.argv[1:])
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
